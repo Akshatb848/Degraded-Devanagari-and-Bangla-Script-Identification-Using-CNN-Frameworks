@@ -1,4 +1,8 @@
-# Core Framework
+# ── Streamlit UI ─────────────────────────────────────────────────────────────
+streamlit==1.41.1
+pandas==2.2.3
+
+# ── Core Framework (REST API) ─────────────────────────────────────────────────
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
