@@ -1,0 +1,32 @@
+# AIOCR Celery Worker Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
+    tesseract-ocr \
+    tesseract-ocr-hin \
+    tesseract-ocr-ben \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN groupadd -r aiocr && useradd -r -g aiocr aiocr && \
+    mkdir -p /app/saved_models /app/logs && \
+    chown -R aiocr:aiocr /app
+
+COPY --chown=aiocr:aiocr . .
+
+USER aiocr
+
+CMD ["celery", "-A", "workers.celery_app", "worker", \
+     "--loglevel=info", "--queues=pipeline,detection", \
+     "--concurrency=2", "--max-tasks-per-child=50"]

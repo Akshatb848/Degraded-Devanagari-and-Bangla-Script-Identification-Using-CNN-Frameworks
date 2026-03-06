@@ -1,0 +1,156 @@
+---
+# AIOCR API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiocr-api
+  namespace: aiocr
+  labels:
+    app: aiocr
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: aiocr
+      component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: aiocr
+        component: api
+    spec:
+      containers:
+        - name: api
+          image: aiocr-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: aiocr-config
+            - secretRef:
+                name: aiocr-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /app/saved_models
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: aiocr-models-pvc
+
+---
+# Celery Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiocr-worker
+  namespace: aiocr
+  labels:
+    app: aiocr
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aiocr
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: aiocr
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: aiocr-worker:latest
+          command: ["celery", "-A", "workers.celery_app", "worker",
+                    "--loglevel=info", "--queues=pipeline,detection",
+                    "--concurrency=2"]
+          envFrom:
+            - configMapRef:
+                name: aiocr-config
+            - secretRef:
+                name: aiocr-secrets
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /app/saved_models
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: aiocr-models-pvc
+
+---
+# PersistentVolumeClaim for model storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aiocr-models-pvc
+  namespace: aiocr
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# HorizontalPodAutoscaler for API
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aiocr-api-hpa
+  namespace: aiocr
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aiocr-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
