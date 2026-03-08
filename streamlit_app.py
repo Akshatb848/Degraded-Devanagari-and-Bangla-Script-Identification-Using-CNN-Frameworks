@@ -108,15 +108,17 @@ def _run_single(
     log.emit()
 
     return {
-        "request_id":        request_id,
-        "script":            script,
-        "script_confidence": script_conf,
-        "ocr_confidence":    ocr_conf,
-        "raw_text":          raw_text,
-        "corrected_text":    correction.corrected_text,
-        "corrections":       correction.corrections,
-        "reasoning":         correction.reasoning,
-        "llm_model":         correction.model_used,
+        "request_id":            request_id,
+        "script":                script,
+        "script_confidence":     script_conf,
+        "ocr_confidence":        ocr_conf,
+        "raw_text":              raw_text,
+        "corrected_text":        correction.corrected_text,
+        "corrections":           correction.corrections,
+        "reasoning":             correction.reasoning,
+        "llm_confidence_label":  correction.confidence_label,
+        "llm_confidence_score":  correction.confidence_score,
+        "llm_model":             correction.model_used,
         "skew_angle":        prep.skew_angle,
         "quality_score":     prep.quality_score,
         "line_count":        len(prep.line_bboxes),
@@ -162,6 +164,12 @@ def _render_result(
         line_count=result["line_count"],
         char_count=result["char_count"],
     )
+
+    # LLM confidence badge (from manuscript restoration model)
+    llm_conf_label = result.get("llm_confidence_label", "")
+    if llm_conf_label:
+        badge_color = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(llm_conf_label, "⚪")
+        st.info(f"{badge_color} LLM Correction Confidence: **{llm_conf_label}**")
 
     if result["ocr_confidence"] < conf_warn_threshold:
         st.warning(
