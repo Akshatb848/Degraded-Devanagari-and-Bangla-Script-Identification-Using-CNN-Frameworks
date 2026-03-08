@@ -1,11 +1,17 @@
 """
 UI Components
 ─────────────
-Reusable Streamlit widgets for the AIOCR application.
+Reusable Streamlit widgets for the Multi-Agent Manuscript Intelligence System.
 
 All functions accept plain Python values and render directly to the
-Streamlit page.  No global state is mutated here — state lives in
+Streamlit page. No global state is mutated here — state lives in
 streamlit_app.py.
+
+4-agent pipeline:
+  Agent 1 — Image Restoration
+  Agent 2 — Script Detection
+  Agent 3 — OCR Extraction
+  Agent 4 — Linguistic Reconstruction
 """
 
 from __future__ import annotations
@@ -16,32 +22,32 @@ import streamlit as st
 from PIL import Image
 
 
-# ── pipeline progress ─────────────────────────────────────────────────────────
+# ── agent definitions ─────────────────────────────────────────────────────────
 
-PIPELINE_STEPS = [
-    "Preprocessing",
-    "Script Classification",
-    "OCR Extraction",
-    "LLM Correction",
-    "Validation",
+AGENTS = [
+    {"icon": "🔧", "name": "Image Restoration",         "key": "preprocessing"},
+    {"icon": "🔍", "name": "Script Detection",           "key": "classification"},
+    {"icon": "📝", "name": "OCR Extraction",             "key": "ocr"},
+    {"icon": "🧠", "name": "Linguistic Reconstruction",  "key": "llm_correction"},
 ]
 
 
+# ── pipeline progress ─────────────────────────────────────────────────────────
+
 def show_pipeline_progress(current_step: int) -> None:
     """
-    Render a visual progress indicator for the 5-step pipeline.
-    *current_step* is 0-indexed; pass len(PIPELINE_STEPS) when done.
+    Render a 4-agent progress stepper.
+    *current_step* is 0-indexed; pass 4 when all agents are done.
     """
-    n = len(PIPELINE_STEPS)
-    cols = st.columns(n)
-    for i, (col, label) in enumerate(zip(cols, PIPELINE_STEPS)):
+    cols = st.columns(len(AGENTS))
+    for i, (col, agent) in enumerate(zip(cols, AGENTS)):
         with col:
             if i < current_step:
-                st.markdown(f"✅ **{label}**")
+                st.markdown(f"✅ **{agent['icon']} {agent['name']}**")
             elif i == current_step:
-                st.markdown(f"⏳ **{label}**")
+                st.markdown(f"⏳ **{agent['icon']} {agent['name']}**")
             else:
-                st.markdown(f"⬜ {label}")
+                st.markdown(f"⬜ {agent['icon']} {agent['name']}")
 
 
 # ── confidence meter ──────────────────────────────────────────────────────────
@@ -53,8 +59,7 @@ def confidence_meter(
 ) -> None:
     """Render a labelled progress bar with colour-coded warning."""
     pct = round(value * 100, 1)
-    color = "normal" if value >= warn_below else "inverse"
-    st.metric(label=label, value=f"{pct}%", delta=None)
+    st.metric(label=label, value=f"{pct}%")
     st.progress(min(max(value, 0.0), 1.0))
     if value < warn_below:
         st.warning(f"Low confidence ({pct}%) — result may be unreliable.")
@@ -66,7 +71,7 @@ def before_after_images(
     original:   Image.Image,
     processed:  Image.Image,
     orig_label: str = "Original",
-    proc_label: str = "Preprocessed",
+    proc_label: str = "Restored",
 ) -> None:
     col1, col2 = st.columns(2)
     with col1:
@@ -81,7 +86,7 @@ def before_after_images(
 
 def preprocessing_gallery(stages: Dict[str, Optional[Image.Image]]) -> None:
     """
-    Render a 3-column grid of intermediate preprocessing images.
+    Render a grid of intermediate preprocessing stage images.
 
     Args:
         stages: ordered dict of {label: PIL Image or None}
@@ -101,7 +106,7 @@ def preprocessing_gallery(stages: Dict[str, Optional[Image.Image]]) -> None:
                 st.image(img, use_container_width=True)
 
 
-# ── OCR / LLM text comparison ─────────────────────────────────────────────────
+# ── text comparison ───────────────────────────────────────────────────────────
 
 def text_comparison(
     raw_text:       str,
@@ -111,7 +116,7 @@ def text_comparison(
 ) -> None:
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("**Raw OCR Output**")
+        st.markdown("**Raw OCR Output (Agent 3)**")
         st.text_area(
             label="raw_ocr",
             value=raw_text or "(no text extracted)",
@@ -120,10 +125,10 @@ def text_comparison(
             disabled=True,
         )
     with col2:
-        st.markdown("**LLM Corrected Output**")
+        st.markdown("**Reconstructed Text (Agent 4)**")
         st.text_area(
-            label="corrected",
-            value=corrected_text or "(no correction)",
+            label="reconstructed",
+            value=corrected_text or "(no reconstruction)",
             height=250,
             label_visibility="collapsed",
             disabled=True,
@@ -135,7 +140,7 @@ def text_comparison(
                 st.markdown(f"{i}. {c}")
 
     if reasoning:
-        with st.expander("Model reasoning"):
+        with st.expander("Linguistic reasoning"):
             st.write(reasoning)
 
 
@@ -143,10 +148,10 @@ def text_comparison(
 
 def agent_timing_chart(timings: Dict[str, float]) -> None:
     """
-    Render a horizontal bar chart of per-step durations (ms).
+    Render a horizontal bar chart of per-agent durations (ms).
 
     Args:
-        timings: {step_name: duration_ms}
+        timings: {agent_name: duration_ms}
     """
     if not timings:
         return
@@ -155,13 +160,13 @@ def agent_timing_chart(timings: Dict[str, float]) -> None:
         import pandas as pd
 
         df = pd.DataFrame(
-            {"Step": list(timings.keys()), "Duration (ms)": list(timings.values())}
-        ).set_index("Step")
+            {"Agent": list(timings.keys()), "Duration (ms)": list(timings.values())}
+        ).set_index("Agent")
 
-        st.markdown("**Processing Time per Step**")
+        st.markdown("**Agent Processing Times**")
         st.bar_chart(df)
     except Exception:
-        st.markdown("**Processing Time per Step**")
+        st.markdown("**Agent Processing Times**")
         for step, ms in timings.items():
             st.text(f"  {step}: {ms:.1f} ms")
 
@@ -169,16 +174,16 @@ def agent_timing_chart(timings: Dict[str, float]) -> None:
 # ── metrics row ───────────────────────────────────────────────────────────────
 
 def metrics_row(
-    script:           str,
-    script_conf:      float,
-    ocr_conf:         float,
-    total_ms:         float,
-    line_count:       int,
-    char_count:       int,
+    script:       str,
+    script_conf:  float,
+    ocr_conf:     float,
+    total_ms:     float,
+    line_count:   int,
+    char_count:   int,
 ) -> None:
     cols = st.columns(6)
     data = [
-        ("Script",       script.title()),
+        ("Script",       script.capitalize()),
         ("Script Conf.", f"{script_conf*100:.1f}%"),
         ("OCR Conf.",    f"{ocr_conf*100:.1f}%"),
         ("Time",         f"{total_ms:.0f} ms"),
@@ -191,7 +196,7 @@ def metrics_row(
 
 # ── download button ───────────────────────────────────────────────────────────
 
-def download_result_json(result_dict: dict, filename: str = "ocr_result.json") -> None:
+def download_result_json(result_dict: dict, filename: str = "manuscript_result.json") -> None:
     import json
 
     json_bytes = json.dumps(result_dict, ensure_ascii=False, indent=2).encode("utf-8")
