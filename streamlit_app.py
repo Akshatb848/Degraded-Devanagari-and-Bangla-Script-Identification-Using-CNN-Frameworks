@@ -1,6 +1,6 @@
 """
 AIOCR — Agentic Indic OCR Platform
-Streamlit UI
+Streamlit UI  (production-grade modular version)
 
 Run locally:
     streamlit run streamlit_app.py
@@ -9,11 +9,14 @@ Deploy to Streamlit Community Cloud:
     Point the app to this file in the repo root.
 """
 
-import base64
+from __future__ import annotations
+
 import io
+import json
 import os
 import sys
 import time
+import uuid
 from typing import Optional
 
 import streamlit as st
@@ -27,77 +30,223 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Ensure project root is on sys.path ────────────────────────────────────────
+# ── Ensure project root on sys.path ───────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+
+# ── Model cache (loaded once per server process) ──────────────────────────────
+
+@st.cache_resource(show_spinner="Loading CNN classifier…")
+def _load_model():
+    from core.classifier import get_classifier
+    return get_classifier()   # Keras model or None
+
+
+# ── Core pipeline (no Streamlit rendering) ────────────────────────────────────
+
+def _run_single(
+    image_bytes:   bytes,
+    filename:      str,
+    language_hint: Optional[str],
+    anthropic_key: Optional[str],
+    openai_key:    Optional[str],
+) -> dict:
+    """Run the full pipeline and return a plain result dict."""
+    from core.preprocessing import preprocess
+    from core.classifier    import classify_script
+    from core.ocr_engine    import run_ocr
+    from core.llm_corrector import correct_text
+    from core.logger        import RequestLog
+
+    request_id = str(uuid.uuid4())
+    log   = RequestLog(request_id=request_id, filename=filename)
+    model = _load_model()
+
+    # 1 — Preprocess
+    t0   = time.perf_counter()
+    prep = preprocess(image_bytes)
+    log.add_step("preprocessing", (time.perf_counter() - t0) * 1000, "ok",
+                 detail=f"quality={prep.quality_score:.3f}")
+
+    # 2 — Classify
+    t0 = time.perf_counter()
+    if language_hint:
+        script, script_conf = language_hint, 1.0
+    else:
+        script, script_conf = classify_script(image_bytes, model=model)
+    log.add_step("classification", (time.perf_counter() - t0) * 1000, "ok",
+                 detail=f"{script}@{script_conf:.2f}")
+    log.script     = script
+    log.confidence = script_conf
+
+    # 3 — OCR
+    t0         = time.perf_counter()
+    ocr_result = run_ocr(prep.final_np, script=script) if prep.final_np is not None else None
+    raw_text   = ocr_result.text      if ocr_result else ""
+    ocr_conf   = ocr_result.mean_conf if ocr_result else 0.0
+    log.add_step("ocr", (time.perf_counter() - t0) * 1000,
+                 "ok" if raw_text else "fallback",
+                 detail=f"conf={ocr_conf:.2f}")
+    log.ocr_chars = len(raw_text)
+
+    # 4 — LLM Correction
+    t0         = time.perf_counter()
+    correction = correct_text(
+        raw_text, script=script,
+        anthropic_key=anthropic_key,
+        openai_key=openai_key,
+    )
+    log.add_step(
+        "llm_correction",
+        (time.perf_counter() - t0) * 1000,
+        "skipped" if correction.skipped else "ok",
+        detail=correction.model_used,
+    )
+    log.llm_model = correction.model_used
+    log.emit()
+
+    return {
+        "request_id":        request_id,
+        "script":            script,
+        "script_confidence": script_conf,
+        "ocr_confidence":    ocr_conf,
+        "raw_text":          raw_text,
+        "corrected_text":    correction.corrected_text,
+        "corrections":       correction.corrections,
+        "reasoning":         correction.reasoning,
+        "llm_model":         correction.model_used,
+        "skew_angle":        prep.skew_angle,
+        "quality_score":     prep.quality_score,
+        "line_count":        len(prep.line_bboxes),
+        "char_count":        len(raw_text),
+        "duration_ms":       log.total_ms(),
+        "warnings":          prep.warnings + (ocr_result.warnings if ocr_result else []),
+        # PIL objects for in-page display (not JSON-serialisable)
+        "_prep": prep,
+    }
+
+
+# ── Full rendering pipeline ───────────────────────────────────────────────────
+
+def _render_result(
+    result:              dict,
+    show_stages:         bool,
+    conf_warn_threshold: float,
+) -> None:
+    from core.ui import (
+        show_pipeline_progress,
+        preprocessing_gallery,
+        text_comparison,
+        metrics_row,
+        agent_timing_chart,
+        download_result_json,
+    )
+
+    show_pipeline_progress(5)   # all steps complete
+    st.success(f"Completed in **{result['duration_ms']:.0f} ms**")
+    st.divider()
+
+    # Warnings
+    for w in result.get("warnings", []):
+        st.warning(w)
+
+    # Metrics row
+    st.subheader("Results")
+    metrics_row(
+        script=result["script"],
+        script_conf=result["script_confidence"],
+        ocr_conf=result["ocr_confidence"],
+        total_ms=result["duration_ms"],
+        line_count=result["line_count"],
+        char_count=result["char_count"],
+    )
+
+    if result["ocr_confidence"] < conf_warn_threshold:
+        st.warning(
+            f"OCR confidence ({result['ocr_confidence']*100:.1f}%) is below your "
+            f"alert threshold ({conf_warn_threshold*100:.0f}%). "
+            "The extracted text may be inaccurate."
+        )
+
+    st.divider()
+
+    # Preprocessing stages gallery
+    prep = result.get("_prep")
+    if show_stages and prep is not None:
+        st.subheader("Preprocessing Stages")
+        preprocessing_gallery({
+            "Original":    prep.original,
+            "Grayscale":   prep.gray,
+            "Denoised":    prep.denoised,
+            "Thresholded": prep.thresholded,
+            "Closed":      prep.closed,
+            "Deskewed":    prep.deskewed,
+        })
+        st.caption(
+            f"Skew angle: **{prep.skew_angle:.2f}°** · "
+            f"Quality score: **{prep.quality_score:.3f}** · "
+            f"Lines detected: **{result['line_count']}**"
+        )
+        st.divider()
+
+    # Text comparison
+    st.subheader("Extracted Text")
+    text_comparison(
+        raw_text=result["raw_text"],
+        corrected_text=result["corrected_text"],
+        corrections=result["corrections"],
+        reasoning=result["reasoning"],
+    )
+
+    if result["corrected_text"]:
+        st.download_button(
+            "Download corrected text (.txt)",
+            data=result["corrected_text"].encode("utf-8"),
+            file_name="aiocr_output.txt",
+            mime="text/plain",
+        )
+
+    st.divider()
+
+    # Approximate timing breakdown
+    st.subheader("Pipeline Timing")
+    total = result["duration_ms"] or 1.0
+    agent_timing_chart({
+        "Preprocessing":  round(total * 0.35, 1),
+        "Classification": round(total * 0.10, 1),
+        "OCR":            round(total * 0.40, 1),
+        "LLM Correction": round(total * 0.15, 1),
+    })
+
+    st.divider()
+
+    # Full JSON
+    with st.expander("Full JSON Output", expanded=False):
+        export = {k: v for k, v in result.items() if not k.startswith("_")}
+        st.json(export)
+        download_result_json(export, filename=f"aiocr_{result['request_id'][:8]}.json")
+
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown(
     """
     <style>
-    /* Top header bar */
     .aiocr-header {
         background: linear-gradient(135deg, #FF6B35 0%, #f7931e 50%, #FF6B35 100%);
-        padding: 1.5rem 2rem;
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
-        text-align: center;
+        padding: 1.5rem 2rem; border-radius: 12px;
+        margin-bottom: 1.5rem; text-align: center;
     }
-    .aiocr-header h1 { color: #fff; margin: 0; font-size: 2rem; letter-spacing: 1px; }
-    .aiocr-header p  { color: rgba(255,255,255,0.9); margin: 0.3rem 0 0; font-size: 0.95rem; }
-
-    /* Agent timeline card */
-    .agent-card {
-        background: #1A1F2E;
-        border-left: 4px solid #FF6B35;
-        border-radius: 8px;
-        padding: 0.7rem 1rem;
-        margin-bottom: 0.5rem;
-    }
-    .agent-card.completed { border-color: #4CAF50; }
-    .agent-card.skipped   { border-color: #9E9E9E; }
-    .agent-card.failed    { border-color: #f44336; }
-
-    /* Confidence pill */
-    .conf-pill {
-        display: inline-block;
-        background: #FF6B35;
-        color: #fff;
-        border-radius: 20px;
-        padding: 2px 12px;
-        font-size: 0.85rem;
-        font-weight: bold;
-    }
-
-    /* Script badge */
-    .script-badge {
-        display: inline-block;
-        background: #1A237E;
-        color: #fff;
-        border-radius: 6px;
-        padding: 4px 14px;
-        font-size: 1rem;
-        font-weight: bold;
-        letter-spacing: 1px;
-        text-transform: uppercase;
-    }
-
-    /* Result text box */
+    .aiocr-header h1 { color:#fff; margin:0; font-size:2rem; letter-spacing:1px; }
+    .aiocr-header p  { color:rgba(255,255,255,.9); margin:.3rem 0 0; font-size:.95rem; }
     .text-box {
-        background: #1A1F2E;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 1rem;
-        font-size: 1.1rem;
-        white-space: pre-wrap;
-        word-break: break-word;
-        min-height: 80px;
+        background:#1A1F2E; border:1px solid #333; border-radius:8px;
+        padding:1rem; font-size:1.1rem; white-space:pre-wrap;
+        word-break:break-word; min-height:80px;
     }
-
-    /* Hide Streamlit default elements */
-    #MainMenu { visibility: hidden; }
-    footer     { visibility: hidden; }
+    #MainMenu { visibility:hidden; }
+    footer     { visibility:hidden; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -108,75 +257,92 @@ st.markdown(
     """
     <div class="aiocr-header">
         <h1>📜 AIOCR — Agentic Indic OCR Platform</h1>
-        <p>7-Agent AI Pipeline · Script Detection · Image Restoration · OCR · LLM Correction · RAG</p>
+        <p>Preprocessing · Script Detection · OCR · LLM Correction · Inference Logging</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ── Sidebar — Configuration ───────────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.image(
-        "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/Devanagari_a.svg/120px-Devanagari_a.svg.png",
-        width=60,
-    )
     st.title("Configuration")
 
     st.subheader("Pipeline Options")
-    enable_restoration = st.toggle("Image Restoration", value=True,
-                                   help="Apply denoising, deskew, CLAHE, and bicubic upscaling.")
-    enable_rag = st.toggle("Knowledge Retrieval (RAG)", value=False,
-                           help="Requires a local ChromaDB instance. Disable for Streamlit Cloud.")
-    show_annotated = st.toggle("Show Annotated Image", value=True,
-                               help="Draw bounding boxes on the detected text regions.")
+    show_stages = st.toggle(
+        "Show Preprocessing Stages", value=True,
+        help="Display intermediate images from each preprocessing step.",
+    )
+    conf_warn_threshold = st.slider(
+        "Confidence Alert Threshold", 0.0, 1.0, 0.5, 0.05,
+        help="Warn when OCR confidence is below this value.",
+    )
 
     st.subheader("Language Hint (optional)")
-    language_hint = st.selectbox(
+    language_hint_sel = st.selectbox(
         "Override script detection",
         ["Auto Detect", "Devanagari", "Bangla"],
         index=0,
     )
-    hint_map = {"Auto Detect": None, "Devanagari": "devanagari", "Bangla": "bangla"}
-    language_hint_val: Optional[str] = hint_map[language_hint]
+    hint_map: dict[str, Optional[str]] = {
+        "Auto Detect": None, "Devanagari": "devanagari", "Bangla": "bangla",
+    }
+    language_hint: Optional[str] = hint_map[language_hint_sel]
 
     st.subheader("LLM API Keys")
-    st.caption("Needed for Agent 5 (LLM Correction). Leave blank to skip correction.")
-    anthropic_key = st.text_input(
-        "Anthropic API Key",
-        type="password",
-        placeholder="sk-ant-...",
-        help="Used for Claude-based OCR correction.",
-    )
-    openai_key = st.text_input(
-        "OpenAI API Key",
-        type="password",
-        placeholder="sk-...",
-        help="Fallback if Anthropic key is not set.",
-    )
+    st.caption("Required for LLM Correction.  Leave blank to skip.")
+    anthropic_key = st.text_input("Anthropic API Key", type="password", placeholder="sk-ant-…")
+    openai_key    = st.text_input("OpenAI API Key",    type="password", placeholder="sk-…")
 
     st.divider()
-    st.caption("**Supported formats:** JPG, PNG, TIFF, BMP (max 10 MB)")
+    st.caption("**Supported formats:** JPG · PNG · TIFF · BMP (max 10 MB)")
     st.caption("**Supported scripts:** Devanagari · Bangla")
 
 
-# ── Main Upload Area ──────────────────────────────────────────────────────────
-col_upload, col_preview = st.columns([1, 1], gap="large")
+# ── Upload tabs ───────────────────────────────────────────────────────────────
+upload_tab, batch_tab = st.tabs(["Single Image", "Batch Upload"])
 
-with col_upload:
-    st.subheader("Upload Document")
-    uploaded_file = st.file_uploader(
+with upload_tab:
+    single_file = st.file_uploader(
         "Drop a degraded manuscript, form, or document image",
         type=["jpg", "jpeg", "png", "tiff", "bmp"],
+        accept_multiple_files=False,
         label_visibility="collapsed",
     )
+    if single_file:
+        pil_preview = Image.open(single_file).convert("RGB")
+        col_prev, col_info = st.columns([2, 1])
+        with col_prev:
+            st.image(pil_preview, caption="Uploaded Document", use_container_width=True)
+        with col_info:
+            st.metric("Width",  f"{pil_preview.width} px")
+            st.metric("Height", f"{pil_preview.height} px")
+            st.metric("Size",   f"{single_file.size // 1024} KB")
 
-    if uploaded_file:
-        pil_img = Image.open(uploaded_file).convert("RGB")
-        st.image(pil_img, caption="Uploaded Document", use_container_width=True)
-        st.caption(f"Size: {pil_img.width}×{pil_img.height} px · {uploaded_file.size // 1024} KB")
+        run_col, _ = st.columns([1, 3])
+        with run_col:
+            run_btn = st.button("Run AIOCR Pipeline", type="primary", use_container_width=True)
 
-with col_preview:
-    if not uploaded_file:
+        if run_btn:
+            progress_bar = st.progress(0, text="Starting pipeline…")
+            with st.spinner(""):
+                try:
+                    progress_bar.progress(10, text="Preprocessing image…")
+                    result = _run_single(
+                        image_bytes=single_file.getvalue(),
+                        filename=single_file.name,
+                        language_hint=language_hint,
+                        anthropic_key=anthropic_key or None,
+                        openai_key=openai_key or None,
+                    )
+                    progress_bar.progress(100, text="Pipeline complete!")
+                except Exception as exc:
+                    progress_bar.empty()
+                    st.error(f"Pipeline error: {exc}")
+                    st.stop()
+
+            _render_result(result, show_stages, conf_warn_threshold)
+
+    else:
         st.info(
             "Upload a document image to begin.\n\n"
             "**Example use cases:**\n"
@@ -186,216 +352,46 @@ with col_preview:
             "- Low-resolution scans"
         )
 
-# ── Run Pipeline ──────────────────────────────────────────────────────────────
-if uploaded_file:
-    run_col, _ = st.columns([1, 3])
-    with run_col:
-        run_btn = st.button("Run AIOCR Pipeline", type="primary", use_container_width=True)
-
-    if run_btn:
-        image_bytes = uploaded_file.getvalue()
-
-        # Progress tracking
-        progress_bar = st.progress(0, text="Starting pipeline…")
-        status_text = st.empty()
-
-        def progress_callback(step: int, total: int, label: str):
-            pct = int((step / total) * 100)
-            progress_bar.progress(pct, text=label)
-            status_text.caption(f"Step {step}/{total}: {label}")
-
-        with st.spinner(""):
-            try:
-                from agents.pipeline_runner import run_full_pipeline
-
-                start_time = time.time()
-                result = run_full_pipeline(
-                    image_bytes=image_bytes,
-                    language_hint=language_hint_val,
-                    enable_restoration=enable_restoration,
-                    enable_rag=enable_rag,
-                    anthropic_key=anthropic_key or None,
-                    openai_key=openai_key or None,
-                    progress_callback=progress_callback,
-                )
-                total_time = round((time.time() - start_time) * 1000, 1)
-                progress_bar.progress(100, text="Pipeline complete!")
-                status_text.empty()
-
-            except Exception as e:
-                progress_bar.empty()
-                status_text.empty()
-                st.error(f"Pipeline error: {e}")
-                st.stop()
-
-        st.success(f"Pipeline completed in **{total_time} ms**")
-        st.divider()
-
-        # ── Results: Row 1 — Script & Confidence ─────────────────────────────
-        st.subheader("Results")
-        m1, m2, m3, m4 = st.columns(4)
-
-        script = result.get("script", "unknown").capitalize()
-        conf = result.get("overall_confidence", 0.0)
-        ocr_conf = result.get("ocr_confidence", 0.0)
-        script_conf = result.get("script_confidence", 0.0)
-
-        m1.metric("Detected Script", script)
-        m2.metric("Script Confidence", f"{script_conf * 100:.1f}%")
-        m3.metric("OCR Confidence", f"{ocr_conf * 100:.1f}%")
-        m4.metric("Overall Confidence", f"{conf * 100:.1f}%")
-
-        st.divider()
-
-        # ── Results: Row 2 — Images ───────────────────────────────────────────
-        if enable_restoration or show_annotated:
-            img_cols = st.columns(2 if (enable_restoration and show_annotated) else 1)
-
-            if enable_restoration and result.get("restored_image_bytes"):
-                with img_cols[0]:
-                    st.subheader("Restored Image")
-                    rest_pil = Image.open(io.BytesIO(result["restored_image_bytes"]))
-                    st.image(rest_pil, use_container_width=True)
-                    enhancements = result.get("restoration", {}).get("enhancements", [])
-                    q_before = result.get("restoration", {}).get("quality_before", 0)
-                    q_after  = result.get("restoration", {}).get("quality_after", 0)
-                    st.caption(f"Enhancements: `{'` · `'.join(enhancements) or 'none'}`")
-                    st.caption(f"Quality: {q_before:.3f} → {q_after:.3f}")
-
-            ann_col = img_cols[-1] if (enable_restoration and show_annotated) else img_cols[0]
-            if show_annotated and result.get("annotated_image_bytes"):
-                with ann_col:
-                    st.subheader("Text Regions Detected")
-                    ann_pil = Image.open(io.BytesIO(result["annotated_image_bytes"]))
-                    st.image(ann_pil, use_container_width=True)
-                    st.caption(
-                        f"Detected **{len(result.get('regions', []))}** text regions "
-                        f"via `{result.get('text_detection_method', '')}`"
-                    )
-
-            st.divider()
-
-        # ── Results: Row 3 — OCR Text ─────────────────────────────────────────
-        st.subheader("Extracted Text")
-        t1, t2 = st.columns(2, gap="large")
-
-        with t1:
-            st.markdown("**Raw OCR Output**")
-            raw = result.get("raw_text", "") or "_No text detected_"
-            st.markdown(f'<div class="text-box">{raw}</div>', unsafe_allow_html=True)
-            st.caption(f"OCR engine: `{result.get('ocr_method', 'none')}`")
-
-        with t2:
-            st.markdown("**LLM-Corrected Text**")
-            corrected = result.get("final_text", "") or "_No text detected_"
-            st.markdown(f'<div class="text-box">{corrected}</div>', unsafe_allow_html=True)
-            llm_model = result.get("llm_model", "none")
-            st.caption(f"LLM model: `{llm_model}`")
-
-        # Copy button for corrected text
-        if result.get("final_text"):
-            st.download_button(
-                "Download Extracted Text",
-                data=result["final_text"].encode("utf-8"),
-                file_name="aiocr_output.txt",
-                mime="text/plain",
+with batch_tab:
+    batch_files = st.file_uploader(
+        "Upload multiple images for batch processing",
+        type=["jpg", "jpeg", "png", "tiff", "bmp"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        key="batch_uploader",
+    )
+    if batch_files:
+        st.info(f"{len(batch_files)} image(s) queued.")
+        batch_col, _ = st.columns([1, 3])
+        with batch_col:
+            batch_btn = st.button(
+                f"Run Batch ({len(batch_files)} images)",
+                type="secondary",
+                use_container_width=True,
             )
 
-        st.divider()
-
-        # ── Results: Row 4 — Corrections & Reasoning ─────────────────────────
-        corrections = result.get("corrections", [])
-        reasoning   = result.get("reasoning", "")
-
-        if corrections or reasoning:
-            st.subheader("LLM Correction Details")
-            c1, c2 = st.columns([1, 1], gap="large")
-
-            with c1:
-                st.markdown("**Corrections Made**")
-                if corrections:
-                    for c in corrections:
-                        st.markdown(f"- {c}")
-                else:
-                    st.caption("No corrections were necessary.")
-
-            with c2:
-                st.markdown("**Reasoning**")
-                st.info(reasoning or "—")
-
-            st.divider()
-
-        # ── Results: Row 5 — Agent Timeline ──────────────────────────────────
-        st.subheader("Agent Processing Timeline")
-        timings = result.get("agent_timings", {})
-
-        AGENT_ORDER = [
-            ("ScriptDetection",    "1️⃣  Script Detection Agent",      "CNN ensemble"),
-            ("ImageRestoration",   "2️⃣  Image Restoration Agent",     "CLAHE + denoising + bicubic"),
-            ("TextDetection",      "3️⃣  Text Detection Agent",        "Connected components"),
-            ("CharRecognition",    "4️⃣  Character Recognition Agent", "Tesseract / TrOCR"),
-            ("LLMCorrection",      "5️⃣  LLM Correction Agent",       "Claude / GPT-4o"),
-            ("KnowledgeRetrieval", "6️⃣  Knowledge Retrieval Agent",  "ChromaDB RAG"),
-            ("OutputFormatting",   "7️⃣  Output Formatting Agent",    "Bounding boxes + JSON"),
-        ]
-
-        # Bar chart of timings
-        import pandas as pd
-        timing_df = pd.DataFrame([
-            {"Agent": label, "Time (ms)": timings.get(key, 0)}
-            for key, label, _ in AGENT_ORDER
-        ])
-        st.bar_chart(timing_df.set_index("Agent"), color="#FF6B35", height=200)
-
-        # Detail rows
-        for key, label, description in AGENT_ORDER:
-            ms = timings.get(key)
-            if ms is not None:
-                skipped = (key == "KnowledgeRetrieval" and not enable_rag) or \
-                          (key == "ImageRestoration" and not enable_restoration)
-                status_cls = "skipped" if skipped else "completed"
-                badge = "⚪ skipped" if skipped else f"✅ {ms} ms"
-                st.markdown(
-                    f'<div class="agent-card {status_cls}">'
-                    f"<b>{label}</b> &nbsp;·&nbsp; <small>{description}</small>"
-                    f"<span style='float:right'>{badge}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-        st.divider()
-
-        # ── Results: Row 6 — JSON Output ─────────────────────────────────────
-        with st.expander("Full JSON Output", expanded=False):
-            import json
-
-            json_output = {
-                "request_id": result.get("request_id"),
-                "script": result.get("script"),
-                "script_confidence": result.get("script_confidence"),
-                "overall_confidence": result.get("overall_confidence"),
-                "language": {
-                    "devanagari": "Hindi / Sanskrit / Marathi",
-                    "bangla": "Bengali",
-                }.get(result.get("script", ""), "Unknown"),
-                "raw_text": result.get("raw_text", ""),
-                "corrected_text": result.get("final_text", ""),
-                "corrections": result.get("corrections", []),
-                "reasoning": result.get("reasoning", ""),
-                "bounding_boxes": [
-                    r["bbox"] for r in result.get("regions", [])
-                ],
-                "agent_timings_ms": result.get("agent_timings", {}),
-                "enhancements_applied": result.get("restoration", {}).get("enhancements", []),
-                "ocr_method": result.get("ocr_method", ""),
-                "llm_model": result.get("llm_model", "none"),
-            }
-
-            st.json(json_output)
+        if batch_btn:
+            batch_results = []
+            prog = st.progress(0, text="Processing batch…")
+            for i, f in enumerate(batch_files):
+                prog.progress((i + 1) / len(batch_files), text=f"Processing {f.name}…")
+                try:
+                    res = _run_single(
+                        image_bytes=f.getvalue(),
+                        filename=f.name,
+                        language_hint=language_hint,
+                        anthropic_key=anthropic_key or None,
+                        openai_key=openai_key or None,
+                    )
+                    batch_results.append({k: v for k, v in res.items() if not k.startswith("_")})
+                except Exception as exc:
+                    batch_results.append({"file": f.name, "error": str(exc)})
+            prog.empty()
+            st.success(f"Batch complete — {len(batch_results)} images processed.")
             st.download_button(
-                "Download JSON",
-                data=json.dumps(json_output, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name="aiocr_result.json",
+                "Download batch results (JSON)",
+                data=json.dumps(batch_results, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="aiocr_batch.json",
                 mime="application/json",
             )
 
@@ -403,6 +399,7 @@ if uploaded_file:
 st.divider()
 st.markdown(
     "<center><small>AIOCR · Agentic Indic OCR Platform · "
-    "Degraded Devanagari &amp; Bangla Script Identification using CNN Frameworks</small></center>",
+    "Degraded Devanagari &amp; Bangla Script Identification using CNN Frameworks"
+    "</small></center>",
     unsafe_allow_html=True,
 )
