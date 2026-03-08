@@ -227,23 +227,26 @@ def run_char_recognition(
 
 # ── Agent 5 – LLM Correction ─────────────────────────────────────────────────
 
+# NOTE: Use __TEXT__ as the sole placeholder — NOT {text} — because the JSON
+# examples in the prompt body contain curly braces that str.format() would try
+# to interpolate, causing KeyError: 'corrected_text'.
 PROMPTS = {
     "devanagari": (
         "You are an expert in Devanagari script. The following is raw OCR text from a degraded "
         "document — fix spelling errors, restore missing matras, and correct character "
         "substitutions (ण/न, ष/श). Respond ONLY in JSON:\n"
-        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n{text}'
+        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n__TEXT__'
     ),
     "bangla": (
         "You are an expert in Bangla script. The following is raw OCR text from a degraded "
         "document — fix glyph confusion (ব/ভ, ড/ড়), missing hasanta, incorrect conjuncts. "
         "Respond ONLY in JSON:\n"
-        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n{text}'
+        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n__TEXT__'
     ),
     "unknown": (
         "You are an expert in Indic scripts. Fix OCR errors in the text below. "
         "Respond ONLY in JSON:\n"
-        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n{text}'
+        '{"corrected_text":"...","corrections":["..."],"reasoning":"..."}\n\nOCR text:\n__TEXT__'
     ),
 }
 
@@ -257,7 +260,7 @@ def run_llm_correction(
     if not raw_text.strip():
         return {"corrected_text": "", "corrections": [], "reasoning": "No text to correct"}
 
-    prompt = PROMPTS.get(script, PROMPTS["unknown"]).format(text=raw_text)
+    prompt = PROMPTS.get(script, PROMPTS["unknown"]).replace("__TEXT__", raw_text)
 
     # Try Anthropic
     if anthropic_key:
@@ -390,76 +393,115 @@ def run_full_pipeline(
     result: Dict[str, Any] = {
         "request_id": str(uuid.uuid4()),
         "agent_timings": {},
+        # Initialise all keys so later steps never get KeyError
+        # even if an earlier agent fails.
+        "script": "unknown",
+        "script_confidence": 0.0,
+        "script_model": "",
+        "restoration": {"enhancements": [], "quality_before": 0.0, "quality_after": 0.0},
+        "restored_image_bytes": image_bytes,
+        "regions": [],
+        "text_detection_method": "",
+        "raw_text": "",
+        "ocr_confidence": 0.0,
+        "ocr_method": "",
+        "texts_per_region": [],
+        "corrected_text": "",
+        "corrections": [],
+        "reasoning": "",
+        "llm_model": "none",
+        "validated_text": "",
+        "rag_context": "",
     }
 
     # 1 — Script Detection
     _progress(1, "Agent 1/7 — Script Detection")
     t0 = time.time()
-    det = run_script_detection(image_bytes, language_hint=language_hint)
-    result["script"] = det["script"]
-    result["script_confidence"] = det["confidence"]
-    result["script_model"] = det.get("model_used", "")
+    try:
+        det = run_script_detection(image_bytes, language_hint=language_hint)
+        result["script"] = det["script"]
+        result["script_confidence"] = det["confidence"]
+        result["script_model"] = det.get("model_used", "")
+    except Exception as e:
+        result["script"] = "unknown"
+        result["script_confidence"] = 0.0
     result["agent_timings"]["ScriptDetection"] = round((time.time() - t0) * 1000, 1)
 
     # 2 — Image Restoration
     _progress(2, "Agent 2/7 — Image Restoration")
     t0 = time.time()
-    if enable_restoration:
-        rest = run_image_restoration(image_bytes)
-        working_bytes = rest["restored_bytes"]
-        result["restoration"] = {
-            "enhancements": rest["enhancements"],
-            "quality_before": rest["quality_before"],
-            "quality_after": rest["quality_after"],
-        }
-    else:
+    try:
+        if enable_restoration:
+            rest = run_image_restoration(image_bytes)
+            working_bytes = rest["restored_bytes"]
+            result["restoration"] = {
+                "enhancements": rest["enhancements"],
+                "quality_before": rest["quality_before"],
+                "quality_after": rest["quality_after"],
+            }
+        else:
+            working_bytes = image_bytes
+    except Exception:
         working_bytes = image_bytes
-        result["restoration"] = {"enhancements": [], "quality_before": 0.0, "quality_after": 0.0}
     result["restored_image_bytes"] = working_bytes
     result["agent_timings"]["ImageRestoration"] = round((time.time() - t0) * 1000, 1)
 
     # 3 — Text Detection
     _progress(3, "Agent 3/7 — Text Detection")
     t0 = time.time()
-    td = run_text_detection(working_bytes)
-    regions = td.get("regions", [])
-    result["regions"] = regions
-    result["text_detection_method"] = td.get("method", "")
+    try:
+        td = run_text_detection(working_bytes)
+        regions = td.get("regions", [])
+        result["regions"] = regions
+        result["text_detection_method"] = td.get("method", "")
+    except Exception:
+        regions = []
     result["agent_timings"]["TextDetection"] = round((time.time() - t0) * 1000, 1)
 
     # 4 — Character Recognition
     _progress(4, "Agent 4/7 — Character Recognition (OCR)")
     t0 = time.time()
-    ocr = run_char_recognition(regions, result["script"])
-    result["raw_text"] = ocr["raw_text"]
-    result["ocr_confidence"] = ocr["confidence"]
-    result["ocr_method"] = ocr.get("method", "")
-    result["texts_per_region"] = ocr.get("texts_per_region", [])
+    try:
+        ocr = run_char_recognition(regions, result["script"])
+        result["raw_text"] = ocr["raw_text"]
+        result["ocr_confidence"] = ocr["confidence"]
+        result["ocr_method"] = ocr.get("method", "")
+        result["texts_per_region"] = ocr.get("texts_per_region", [])
+    except Exception:
+        result["raw_text"] = ""
     result["agent_timings"]["CharRecognition"] = round((time.time() - t0) * 1000, 1)
 
     # 5 — LLM Correction
     _progress(5, "Agent 5/7 — LLM Correction")
     t0 = time.time()
-    llm = run_llm_correction(
-        result["raw_text"],
-        result["script"],
-        anthropic_key=anthropic_key,
-        openai_key=openai_key,
-    )
-    result["corrected_text"] = llm["corrected_text"]
-    result["corrections"] = llm["corrections"]
-    result["reasoning"] = llm["reasoning"]
-    result["llm_model"] = llm.get("model", "none")
+    try:
+        llm = run_llm_correction(
+            result["raw_text"],
+            result["script"],
+            anthropic_key=anthropic_key,
+            openai_key=openai_key,
+        )
+        result["corrected_text"] = llm["corrected_text"]
+        result["corrections"] = llm["corrections"]
+        result["reasoning"] = llm["reasoning"]
+        result["llm_model"] = llm.get("model", "none")
+    except Exception as e:
+        result["corrected_text"] = result["raw_text"]
+        result["reasoning"] = f"LLM correction skipped: {e}"
     result["agent_timings"]["LLMCorrection"] = round((time.time() - t0) * 1000, 1)
 
     # 6 — Knowledge Retrieval
     _progress(6, "Agent 6/7 — Knowledge Retrieval (RAG)")
     t0 = time.time()
-    if enable_rag:
-        rag = run_knowledge_retrieval(result["corrected_text"], result["script"])
-        result["validated_text"] = rag["validated_text"]
-        result["rag_context"] = rag["context"]
-    else:
+    try:
+        if enable_rag:
+            rag = run_knowledge_retrieval(result["corrected_text"], result["script"])
+            result["validated_text"] = rag["validated_text"]
+            result["rag_context"] = rag["context"]
+        else:
+            result["validated_text"] = result["corrected_text"]
+            result["rag_context"] = ""
+    except Exception:
         result["validated_text"] = result["corrected_text"]
         result["rag_context"] = ""
     result["agent_timings"]["KnowledgeRetrieval"] = round((time.time() - t0) * 1000, 1)
