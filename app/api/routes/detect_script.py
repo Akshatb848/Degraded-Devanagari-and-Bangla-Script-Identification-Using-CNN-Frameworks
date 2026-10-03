@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.models.schemas import ScriptDetectionResponse, ScriptType, ErrorResponse
 from app.core.logging import logger
-from models.cnn_classifier import ScriptClassifier
+from models.cnn_classifier import ScriptClassifier, MODEL_STATUS_TRAINED, UNTRAINED_WARNING
 
 router = APIRouter(prefix="/detect-script", tags=["Script Detection"])
 
@@ -18,7 +18,10 @@ router = APIRouter(prefix="/detect-script", tags=["Script Detection"])
     "/",
     response_model=ScriptDetectionResponse,
     summary="Detect script type in an image",
-    description="Uses trained CNN models (VGG16/DenseNet/ResNet/AlexNet) to classify Devanagari or Bangla script.",
+    description=(
+        "Classifies Devanagari vs Bangla with the CNN classifier. If no trained weights are "
+        "present, returns script='unknown' with model_status='untrained_fallback'."
+    ),
 )
 async def detect_script(
     file: UploadFile = File(..., description="Image file (JPG, PNG, TIFF, BMP)"),
@@ -41,12 +44,15 @@ async def detect_script(
         script, confidence, model_used = classifier.predict(image_bytes, model_name=model_name)
 
         processing_time = (time.time() - start_time) * 1000
+        model_status = ScriptClassifier.model_status()
 
         response = ScriptDetectionResponse(
             request_id=request_id,
             script=ScriptType(script),
             confidence=confidence,
             model_used=model_used,
+            model_status=model_status,
+            warning=None if model_status == MODEL_STATUS_TRAINED else UNTRAINED_WARNING,
             processing_time_ms=round(processing_time, 2),
         )
 

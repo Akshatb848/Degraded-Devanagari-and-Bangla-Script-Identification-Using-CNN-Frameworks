@@ -118,4 +118,5 @@ def run_script_detection_task(self, image_bytes: bytes) -> dict:
         "script": script,
         "confidence": confidence,
         "model_used": model_used,
+        "model_status": ScriptClassifier.model_status(),
     }

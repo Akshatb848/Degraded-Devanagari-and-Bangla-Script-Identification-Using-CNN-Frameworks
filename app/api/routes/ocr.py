@@ -11,6 +11,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from app.api.models.schemas import OCRResponse, ScriptType
 from app.core.logging import logger
 from agents.orchestrator import run_ocr_pipeline
+from models.cnn_classifier import ScriptClassifier
 
 router = APIRouter(prefix="/ocr", tags=["OCR"])
 
@@ -56,6 +57,7 @@ async def perform_ocr(
             text_regions=result["text_regions"],
             bounding_boxes=result["bounding_boxes"],
             language_detected=result["language"],
+            script_model_status=ScriptClassifier.model_status(),
             processing_time_ms=round(processing_time, 2),
         )
 

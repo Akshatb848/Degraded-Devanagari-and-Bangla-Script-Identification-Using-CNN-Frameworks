@@ -17,6 +17,7 @@ from app.core.logging import logger
 from agents.orchestrator import AIRCOrchestrator
 from workers.celery_app import run_full_pipeline_task
 from services.cache_service import CacheService
+from models.cnn_classifier import ScriptClassifier
 
 router = APIRouter(prefix="/full-pipeline", tags=["Full Pipeline"])
 
@@ -67,6 +68,7 @@ async def run_full_pipeline(
 
         processing_time = (time.time() - start_time) * 1000
         result["processing_time_ms"] = round(processing_time, 2)
+        result["script_model_status"] = ScriptClassifier.model_status()
 
         logger.info(
             "full_pipeline_complete",

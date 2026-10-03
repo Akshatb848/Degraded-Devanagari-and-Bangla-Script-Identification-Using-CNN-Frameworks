@@ -42,6 +42,12 @@ class ScriptDetectionResponse(BaseModel):
     script: ScriptType
     confidence: float = Field(..., ge=0.0, le=1.0)
     model_used: str
+    model_status: str = Field(
+        "untrained_fallback",
+        description="'trained' when real CNN weights are loaded; 'untrained_fallback' when "
+                    "no trained weights are present and the script result is not a model prediction",
+    )
+    warning: Optional[str] = None
     processing_time_ms: float
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
@@ -66,6 +72,10 @@ class OCRResponse(BaseModel):
     text_regions: List[TextRegion]
     bounding_boxes: List[BoundingBox]
     language_detected: str
+    script_model_status: str = Field(
+        "untrained_fallback",
+        description="Status of the CNN script classifier: 'trained' or 'untrained_fallback'",
+    )
     processing_time_ms: float
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
@@ -93,6 +103,10 @@ class PipelineResponse(BaseModel):
     agent_statuses: List[AgentStatus]
     restored_image_base64: Optional[str] = None
     annotated_image_base64: Optional[str] = None
+    script_model_status: str = Field(
+        "untrained_fallback",
+        description="Status of the CNN script classifier: 'trained' or 'untrained_fallback'",
+    )
     processing_time_ms: float
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
@@ -119,6 +133,7 @@ class HealthResponse(BaseModel):
     status: str = "healthy"
     version: str = "1.0.0"
     models_loaded: Dict[str, bool]
+    model_status: Dict[str, str] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
