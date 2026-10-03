@@ -1,5 +1,13 @@
 # Degraded Script Classifier
 
+> **Note (added during a repository audit):** the VGG-16 / DenseNet-121 /
+> AlexNet / ResNet-50 accuracy figures below are **not reproduced in the
+> committed notebook** (`Degraded_Script_Classifier.ipynb`), which only trains
+> a custom CNN. Its executed output shows `Test accuracy: 0.9908`, measured
+> on the same folder it was trained on. See the top-level
+> [README.md](README.md#research-results). The figures are kept unchanged
+> pending review by the author.
+
 This project focuses on the **identification of degraded Devanagari and Bangla script characters** using Convolutional Neural Network (CNN) frameworks. It is part of a broader effort in OCR and document digitization systems for Indian languages.
 
 ## 🔍 Problem Statement

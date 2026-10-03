@@ -1,8 +1,28 @@
-# Python 3.13 compatible — all packages have pre-built wheels (no source builds)
+# Runtime dependencies for the Streamlit app, the FastAPI service and the
+# Celery worker. Python 3.11–3.13; all packages have pre-built wheels.
+#
+# Not included here (install separately when needed):
+#   requirements-train.txt  — TensorFlow, for training / loading the CNN
+#   requirements-extras.txt — optional agent back-ends (TrOCR, YOLO, docTR,
+#                             Real-ESRGAN, ChromaDB RAG)
+#   requirements-dev.txt    — pytest & test tooling
 
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 streamlit==1.43.2
 pandas==2.2.3
+
+# ── REST API (app/) ───────────────────────────────────────────────────────────
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32          # required by FastAPI for UploadFile form data
+
+# ── Async worker (workers/) ───────────────────────────────────────────────────
+celery[redis]==5.6.3
+redis==6.4.0                      # also used by services/cache_service.py
+
+# ── Database layer (app/core/dependencies.py) ─────────────────────────────────
+sqlalchemy[asyncio]==2.1.3
+asyncpg==0.31.0
 
 # ── Image Processing ──────────────────────────────────────────────────────────
 # numpy 2.x is required — 1.x has no Python 3.13 wheel (caused the distutils crash)

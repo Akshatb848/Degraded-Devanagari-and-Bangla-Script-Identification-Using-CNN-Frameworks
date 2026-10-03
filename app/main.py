@@ -89,10 +89,15 @@ def create_app() -> FastAPI:
     @app.get("/health", response_model=HealthResponse, tags=["Health"])
     async def health_check() -> HealthResponse:
         from models.cnn_classifier import ScriptClassifier
+        status = ScriptClassifier.model_status()
         models_status = {
             "cnn_classifier": ScriptClassifier.is_loaded(),
+            "cnn_classifier_trained_weights": status == "trained",
         }
-        return HealthResponse(models_loaded=models_status)
+        return HealthResponse(
+            models_loaded=models_status,
+            model_status={"cnn_classifier": status},
+        )
 
     @app.get("/", tags=["Root"])
     async def root() -> Dict[str, str]:

@@ -391,7 +391,7 @@ def _execute_pipeline(
     Returns a result dict.
     """
     from core.preprocessing import preprocess
-    from core.classifier    import classify_script
+    from core.classifier    import classify_script_with_method
     from core.ocr_engine    import run_ocr
     from core.llm_corrector import correct_text
     from core.logger        import RequestLog
@@ -410,7 +410,7 @@ def _execute_pipeline(
     # ── defaults ──────────────────────────────────────────────────────────────
     result: dict = {
         "request_id": log.request_id, "script": "unknown",
-        "script_confidence": 0.0, "ocr_confidence": 0.0,
+        "script_confidence": 0.0, "script_method": "none", "ocr_confidence": 0.0,
         "raw_text": "", "corrected_text": "",
         "reasoning": "", "confidence_label": "", "confidence_score": 0.0,
         "llm_model": "none", "restoration_summary": "",
@@ -454,9 +454,17 @@ def _execute_pipeline(
     t0 = time.perf_counter()
     try:
         if language_hint:
-            script, script_conf = language_hint, 1.0
+            script, script_conf, script_method = language_hint, 1.0, "user_hint"
         else:
-            script, script_conf = classify_script(image_bytes, model=model)
+            script, script_conf, script_method = classify_script_with_method(
+                image_bytes, model=model)
+        result["script_method"] = script_method
+        if script_method != "cnn" and script_method != "user_hint":
+            result["warnings"].append(
+                "Script detection did not use a trained CNN (no trained weights "
+                f"loaded; method: {script_method}). The detected script is not a "
+                "model prediction — set the Language Hint in the sidebar for reliable OCR."
+            )
         dur = round((time.perf_counter() - t0) * 1000, 1)
         log.add_step("classification", dur, "ok",
                      detail=f"{script}@{script_conf:.2f}")
@@ -574,8 +582,15 @@ def _render_results(result: dict, original_bytes: bytes) -> None:
         rc           = result["confidence_score"]
         conf_lbl     = result.get("confidence_label", "")
 
+        method_disp = {
+            "cnn": "Trained CNN",
+            "user_hint": "User hint",
+            "unicode_heuristic": "Heuristic (no trained model)",
+            "none": "Not available (no trained model)",
+        }.get(result.get("script_method", "none"), "Unknown")
         chips = (
             _metric_chip("Detected Script", script_disp, True)
+            + _metric_chip("Script Method", method_disp)
             + _metric_chip("Language", lang_disp)
             + _metric_chip("Lines", str(result["line_count"]))
             + _metric_chip("Characters", str(result["char_count"]))
@@ -712,6 +727,18 @@ st.markdown("""
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Model status notice ───────────────────────────────────────────────────────
+if _load_model() is None:
+    st.warning(
+        "**Model status: no trained CNN weights loaded.** This repository does not "
+        "ship trained weights, so automatic script detection runs in fallback mode "
+        "and will usually report *unknown*. Results below are **not** CNN "
+        "predictions. Pick Devanagari or Bangla in the sidebar's Language Hint, or "
+        "train weights with `scripts/train_model.py` and save them as "
+        "`models/script_classifier.keras`.",
+        icon="⚠️",
+    )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:

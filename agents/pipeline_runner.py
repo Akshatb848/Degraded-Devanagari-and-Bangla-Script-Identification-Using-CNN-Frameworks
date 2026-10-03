@@ -51,7 +51,8 @@ def run_script_detection(
         from models.cnn_classifier import ScriptClassifier
         clf = ScriptClassifier.get_instance()
         script, conf, model = clf.predict(image_bytes, model_name=model_name)
-        return {"script": script, "confidence": conf, "model_used": model}
+        return {"script": script, "confidence": conf, "model_used": model,
+                "model_status": ScriptClassifier.model_status()}
     except Exception as e:
         return {"script": "unknown", "confidence": 0.0, "model_used": "failed", "error": str(e)}
 

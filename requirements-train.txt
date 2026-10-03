@@ -1,0 +1,13 @@
+# Training / CNN inference dependencies (optional, heavy).
+# Needed to run scripts/train_model.py, the research notebook, or to load
+# trained weights in the API / Streamlit app. Without TensorFlow the apps run
+# and report model_status="untrained_fallback".
+#
+#   pip install -r requirements.txt -r requirements-train.txt
+-r requirements.txt
+
+# tensorflow-cpu has no macOS wheels; macOS uses the regular package.
+tensorflow-cpu==2.20.0; sys_platform != "darwin"
+tensorflow==2.20.0; sys_platform == "darwin"
+scipy==1.17.1                     # needed by Keras ImageDataGenerator augmentation
+protobuf>=3.20,<6                 # keep compatible with streamlit

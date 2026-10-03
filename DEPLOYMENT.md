@@ -40,10 +40,10 @@ The system uses pre-trained CNN models for script detection.
 Train them from the Ekush dataset:
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (TensorFlow lives in requirements-train.txt)
+pip install -r requirements-train.txt
 
-# Train the custom CNN (matches notebook architecture, ~99% accuracy)
+# Train the custom CNN (matches the notebook architecture)
 python scripts/train_model.py \
   --data-dir /path/to/processed_data \
   --model custom_cnn \
@@ -106,13 +106,16 @@ curl -X POST http://localhost:8000/api/v1/detect-script/ \
   -F "file=@document.png"
 ```
 
-Response:
+Response (with trained weights loaded; without them the API returns
+`"script": "unknown"`, `"model_status": "untrained_fallback"` and a `warning`):
 ```json
 {
   "request_id": "...",
   "script": "devanagari",
   "confidence": 0.99,
   "model_used": "ensemble",
+  "model_status": "trained",
+  "warning": null,
   "processing_time_ms": 45.2
 }
 ```
@@ -240,12 +243,12 @@ kubectl logs -n aiocr -l component=api -f
 
 ```bash
 # Install test dependencies
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 
 # Run all tests
 pytest tests/ -v
 
-# Run with coverage
+# Run with coverage (requires: pip install pytest-cov)
 pytest tests/ -v --cov=. --cov-report=html
 
 # Run specific test file

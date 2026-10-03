@@ -4,11 +4,14 @@ Agents 3 & 4: Text detection + character recognition pipeline.
 """
 import time
 import uuid
+from typing import Optional
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 
 from app.api.models.schemas import OCRResponse, ScriptType
 from app.core.logging import logger
 from agents.orchestrator import run_ocr_pipeline
+from models.cnn_classifier import ScriptClassifier
 
 router = APIRouter(prefix="/ocr", tags=["OCR"])
 
@@ -54,6 +57,7 @@ async def perform_ocr(
             text_regions=result["text_regions"],
             bounding_boxes=result["bounding_boxes"],
             language_detected=result["language"],
+            script_model_status=ScriptClassifier.model_status(),
             processing_time_ms=round(processing_time, 2),
         )
 
@@ -72,7 +76,3 @@ async def perform_ocr(
     except Exception as e:
         logger.error("ocr_error", request_id=request_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
-
-
-# Import Optional after defining the route to avoid circular imports
-from typing import Optional

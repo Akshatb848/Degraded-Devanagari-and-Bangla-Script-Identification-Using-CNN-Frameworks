@@ -9,6 +9,14 @@ Supports:
 - ResNet50 transfer learning
 - AlexNet-style CNN
 - Ensemble (majority voting)
+
+Model status
+------------
+No trained weights are committed to this repository. If no weight file is
+found in ``settings.model_dir`` the classifier does NOT run inference with
+random weights; ``predict`` returns ("unknown", 0.0, UNTRAINED_MODEL_NAME) and
+``model_status()`` reports ``"untrained_fallback"`` so callers can surface
+that clearly. Train weights with ``scripts/train_model.py``.
 """
 import io
 import os
@@ -23,6 +31,15 @@ logger = structlog.get_logger()
 # Script labels matching the training data directory names
 SCRIPT_LABELS = ["bangla", "devanagari"]
 IMAGE_SIZE = (64, 64)
+
+MODEL_STATUS_TRAINED = "trained"
+MODEL_STATUS_UNTRAINED = "untrained_fallback"
+UNTRAINED_MODEL_NAME = "none_no_trained_weights"
+UNTRAINED_WARNING = (
+    "No trained CNN weights were found, so script detection is NOT a model "
+    "prediction (script reported as 'unknown'). Train weights with "
+    "scripts/train_model.py and place them in MODEL_DIR."
+)
 
 
 class ScriptClassifier:
@@ -79,46 +96,28 @@ class ScriptClassifier:
                     logger.warning("model_load_failed", name=name, error=str(e))
 
         if not loaded_any:
+            # Do not fall back to a randomly initialised network: its output
+            # would look like a prediction but carry no information.
             logger.warning(
-                "no_saved_models_found",
+                "no_trained_weights_found",
                 model_dir=model_dir,
-                message="Using fallback inference. Train models first with scripts/train_model.py",
+                model_status=MODEL_STATUS_UNTRAINED,
+                message="Script detection disabled. Train models first with scripts/train_model.py",
             )
-            # Build an untrained placeholder model for demo purposes
-            self.models["custom_cnn"] = ("keras_untrained", self._build_default_model())
 
         ScriptClassifier._loaded = True
 
-    def _build_default_model(self):
-        """
-        Build the custom CNN architecture from the research notebook.
-        Architecture: 3x Conv2D → MaxPool → Dense → Dropout → Softmax
-        """
-        try:
-            import tensorflow as tf
+    @property
+    def has_trained_model(self) -> bool:
+        return any(model_type == "keras" for model_type, _ in self.models.values())
 
-            model = tf.keras.Sequential([
-                tf.keras.layers.Conv2D(32, (3, 3), activation="relu", input_shape=(64, 64, 3)),
-                tf.keras.layers.MaxPooling2D(2, 2),
-                tf.keras.layers.Conv2D(64, (3, 3), activation="relu"),
-                tf.keras.layers.MaxPooling2D(2, 2),
-                tf.keras.layers.Conv2D(128, (3, 3), activation="relu"),
-                tf.keras.layers.MaxPooling2D(2, 2),
-                tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(128, activation="relu"),
-                tf.keras.layers.Dropout(0.5),
-                tf.keras.layers.Dense(2, activation="softmax"),
-            ])
-            model.compile(
-                optimizer="adam",
-                loss="categorical_crossentropy",
-                metrics=["accuracy"],
-            )
-            logger.info("default_cnn_architecture_built")
-            return model
-        except ImportError:
-            logger.warning("tensorflow_not_available")
-            return None
+    @classmethod
+    def model_status(cls) -> str:
+        """'trained' if real weights are loaded, else 'untrained_fallback'."""
+        instance = cls._instance
+        if instance is not None and instance.has_trained_model:
+            return MODEL_STATUS_TRAINED
+        return MODEL_STATUS_UNTRAINED
 
     def _preprocess_image(self, image_bytes: bytes) -> np.ndarray:
         """Preprocess image to model input format: 64x64 RGB normalized."""
@@ -149,6 +148,9 @@ class ScriptClassifier:
         Returns:
             Tuple of (script_label, confidence, model_used)
         """
+        if not self.has_trained_model:
+            return "unknown", 0.0, UNTRAINED_MODEL_NAME
+
         img_array = self._preprocess_image(image_bytes)
 
         if model_name == "ensemble":
@@ -166,7 +168,7 @@ class ScriptClassifier:
 
         model_type, model = self.models[model_name]
 
-        if model_type in ("keras", "keras_untrained"):
+        if model_type == "keras":
             if model is None:
                 return "unknown", 0.0, model_name
             script, confidence = self._predict_with_keras(model, img_array)
@@ -182,7 +184,7 @@ class ScriptClassifier:
         votes: Dict[str, list] = {"bangla": [], "devanagari": []}
 
         for name, (model_type, model) in self.models.items():
-            if model_type in ("keras", "keras_untrained") and model is not None:
+            if model_type == "keras" and model is not None:
                 try:
                     script, confidence = self._predict_with_keras(model, img_array)
                     votes[script].append(confidence)

@@ -118,3 +118,54 @@ class TestSchemas:
         )
         assert response.script == ScriptType.DEVANAGARI
         assert response.overall_confidence == 0.95
+
+
+class TestModelStatusReporting:
+    """No trained weights are committed: the API must say so, not fake predictions."""
+
+    def test_health_reports_untrained_fallback(self, client):
+        data = client.get("/health").json()
+        assert data["model_status"]["cnn_classifier"] == "untrained_fallback"
+        assert data["models_loaded"]["cnn_classifier_trained_weights"] is False
+
+    def test_detect_script_without_weights_is_flagged(self, client, sample_image_bytes):
+        response = client.post(
+            "/api/v1/detect-script/",
+            files={"file": ("test.png", sample_image_bytes, "image/png")},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["script"] == "unknown"
+        assert data["confidence"] == 0.0
+        assert data["model_status"] == "untrained_fallback"
+        assert data["warning"]
+
+
+class TestStreamlitClassifierFallback:
+    def test_no_model_reports_method_none(self, sample_image_bytes):
+        from core.classifier import classify_script_with_method
+        label, conf, method = classify_script_with_method(sample_image_bytes, model=None)
+        assert (label, conf, method) == ("unknown", 0.0, "none")
+
+    def test_unicode_heuristic_is_labelled(self, sample_image_bytes):
+        from core.classifier import classify_script_with_method
+        label, _, method = classify_script_with_method(
+            sample_image_bytes, model=None, ocr_text="ভারত"
+        )
+        assert label == "bangla"
+        assert method == "unicode_heuristic"
+
+
+class TestFullPipelineEndpoint:
+    def test_full_pipeline_accepts_skipped_agent_statuses(self, client, sample_image_bytes):
+        """Agents report statuses like 'skipped'/'no_regions'; the response must validate."""
+        response = client.post(
+            "/api/v1/full-pipeline/?enable_rag=false",
+            files={"file": ("test.png", sample_image_bytes, "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["script_model_status"] == "untrained_fallback"
+        assert {s["status"] for s in data["agent_statuses"]} <= {
+            "pending", "processing", "completed", "failed", "skipped", "fallback", "no_regions",
+        }
