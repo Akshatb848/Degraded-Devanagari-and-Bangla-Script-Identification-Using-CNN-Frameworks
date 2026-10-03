@@ -16,8 +16,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-ben \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Build with --build-arg WITH_TENSORFLOW=true to load trained CNN weights.
+ARG WITH_TENSORFLOW=false
+COPY requirements.txt requirements-train.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    if [ "$WITH_TENSORFLOW" = "true" ]; then pip install --no-cache-dir -r requirements-train.txt; fi
 
 RUN groupadd -r aiocr && useradd -r -g aiocr aiocr && \
     mkdir -p /app/saved_models /app/logs && \

@@ -19,9 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# requirements.txt includes fastapi/uvicorn (needed by CMD below).
+# Build with --build-arg WITH_TENSORFLOW=true to also install TensorFlow so
+# trained weights mounted at /app/saved_models can be loaded; without it the
+# API runs and reports model_status="untrained_fallback".
+ARG WITH_TENSORFLOW=false
+COPY requirements.txt requirements-train.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    if [ "$WITH_TENSORFLOW" = "true" ]; then pip install --no-cache-dir -r requirements-train.txt; fi
 
 # === Stage 2: Runtime ===
 FROM python:3.11-slim AS runtime

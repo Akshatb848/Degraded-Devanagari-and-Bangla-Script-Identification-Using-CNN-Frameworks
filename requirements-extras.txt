@@ -1,0 +1,13 @@
+# Optional back-ends for the 7-agent API pipeline (agents/). Every one of
+# these is imported lazily and the agents fall back to OpenCV / Tesseract /
+# rule-based logic when they are missing. Large downloads (torch, models).
+-r requirements.txt
+
+transformers                      # TrOCR character recognition
+torch
+ultralytics                       # YOLO text detection
+python-doctr                      # docTR text detection
+realesrgan                        # Real-ESRGAN super-resolution
+basicsr
+chromadb                          # RAG knowledge retrieval + scripts/ingest_corpus.py
+sentence-transformers
