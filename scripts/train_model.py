@@ -211,6 +211,8 @@ def train_model(
 
 
 def main():
+    global EPOCHS, BATCH_SIZE
+
     parser = argparse.ArgumentParser(description="Train AIOCR script classifier models")
     parser.add_argument("--data-dir", required=True, help="Path to data directory with Bangla/ and Devanagari/ subdirs")
     parser.add_argument("--output-dir", default="saved_models", help="Directory to save trained models")
@@ -228,7 +230,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Update global training config
-    global EPOCHS, BATCH_SIZE
     EPOCHS = args.epochs
     BATCH_SIZE = args.batch_size
 
