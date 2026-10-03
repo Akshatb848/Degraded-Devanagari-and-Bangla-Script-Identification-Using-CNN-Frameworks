@@ -154,3 +154,18 @@ class TestStreamlitClassifierFallback:
         )
         assert label == "bangla"
         assert method == "unicode_heuristic"
+
+
+class TestFullPipelineEndpoint:
+    def test_full_pipeline_accepts_skipped_agent_statuses(self, client, sample_image_bytes):
+        """Agents report statuses like 'skipped'/'no_regions'; the response must validate."""
+        response = client.post(
+            "/api/v1/full-pipeline/?enable_rag=false",
+            files={"file": ("test.png", sample_image_bytes, "image/png")},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["script_model_status"] == "untrained_fallback"
+        assert {s["status"] for s in data["agent_statuses"]} <= {
+            "pending", "processing", "completed", "failed", "skipped", "fallback", "no_regions",
+        }

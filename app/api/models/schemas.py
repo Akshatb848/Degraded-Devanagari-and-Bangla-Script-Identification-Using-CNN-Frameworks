@@ -21,6 +21,17 @@ class ProcessingStatus(str, Enum):
     FAILED = "failed"
 
 
+class AgentRunStatus(str, Enum):
+    """Per-agent outcome as recorded by the agents in agents/."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    FALLBACK = "fallback"
+    NO_REGIONS = "no_regions"
+
+
 class BoundingBox(BaseModel):
     x: int = Field(..., description="Top-left x coordinate")
     y: int = Field(..., description="Top-left y coordinate")
@@ -82,7 +93,7 @@ class OCRResponse(BaseModel):
 
 class AgentStatus(BaseModel):
     agent_name: str
-    status: ProcessingStatus
+    status: AgentRunStatus
     output: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     processing_time_ms: Optional[float] = None

@@ -3,6 +3,17 @@ Celery worker configuration and task definitions.
 Handles async document processing tasks.
 """
 import asyncio
+import os
+import sys
+import time
+
+# `celery -A workers.celery_app` only puts the CWD on sys.path while it loads
+# the app and removes it again afterwards, so lazy imports inside tasks
+# (services, agents, models) would fail with ModuleNotFoundError. Append the
+# project root unconditionally so an entry survives that removal.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(_PROJECT_ROOT)
+
 from celery import Celery
 from celery.utils.log import get_task_logger
 from app.core.config import settings
@@ -66,6 +77,7 @@ def run_full_pipeline_task(
 
             await cache.set_job_status(job_id=job_id, status="processing", progress=30)
 
+            started = time.time()
             result = await orchestrator.run(
                 image_bytes=image_bytes,
                 request_id=job_id,
@@ -74,6 +86,10 @@ def run_full_pipeline_task(
                 enable_rag=enable_rag,
                 include_annotated_image=False,
             )
+            # Fields PipelineResponse requires (the sync endpoint sets these too)
+            from models.cnn_classifier import ScriptClassifier
+            result["processing_time_ms"] = round((time.time() - started) * 1000, 2)
+            result["script_model_status"] = ScriptClassifier.model_status()
 
             await cache.set_job_status(
                 job_id=job_id,
