@@ -63,3 +63,11 @@ k8s/secrets.yaml
 temp/
 tmp/
 uploads/
+
+# Datasets and caches (never committed)
+data/
+datasets/
+processed_data/
+*.zip
+.cache/
+kaggle.json
